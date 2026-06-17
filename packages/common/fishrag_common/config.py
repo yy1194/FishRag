@@ -56,6 +56,7 @@ class Settings:
     database_url: str
     redis_url: str
     opensearch_url: str
+    opensearch_index_name: str
     llm_provider: str
     llm_base_url: str
     llm_api_key: str
@@ -65,6 +66,7 @@ class Settings:
     embedding_base_url: str
     embedding_api_key: str
     embedding_model: str
+    embedding_dimensions: int
     reranker_provider: str
     reranker_base_url: str
     reranker_api_key: str
@@ -103,6 +105,7 @@ class Settings:
             ),
             redis_url=_get(source, "FISHRAG_REDIS_URL", "redis://localhost:6379/0"),
             opensearch_url=_get(source, "FISHRAG_OPENSEARCH_URL", "http://localhost:9200"),
+            opensearch_index_name=_get(source, "FISHRAG_OPENSEARCH_INDEX_NAME", "fishrag_chunks"),
             llm_provider=_get(source, "FISHRAG_LLM_PROVIDER", "deepseek"),
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
@@ -116,6 +119,7 @@ class Settings:
             ),
             embedding_api_key=_get(source, "FISHRAG_EMBEDDING_API_KEY", ""),
             embedding_model=_get(source, "FISHRAG_EMBEDDING_MODEL", "BAAI/bge-m3"),
+            embedding_dimensions=int(_get(source, "FISHRAG_EMBEDDING_DIMENSIONS", "1024")),
             reranker_provider=_get(source, "FISHRAG_RERANKER_PROVIDER", "siliconflow"),
             reranker_base_url=_get(
                 source,

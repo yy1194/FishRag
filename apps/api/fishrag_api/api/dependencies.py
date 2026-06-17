@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from fishrag_common.config import get_settings
+from fishrag_rag.embeddings import EmbeddingClient, OpenAICompatibleEmbeddingClient
+from fishrag_rag.keyword_index import KeywordIndexClient, OpenSearchKeywordIndexClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fishrag_api.core.security import TokenPayload, decode_access_token
@@ -49,3 +52,22 @@ def require_roles(*allowed_roles: str) -> Callable[[CurrentUser], CurrentUser]:
         return user
 
     return dependency
+
+
+def get_embedding_client() -> EmbeddingClient:
+    settings = get_settings()
+    return OpenAICompatibleEmbeddingClient(
+        provider=settings.embedding_provider,
+        base_url=settings.embedding_base_url,
+        api_key=settings.embedding_api_key,
+        model=settings.embedding_model,
+        expected_dimensions=settings.embedding_dimensions,
+    )
+
+
+def get_keyword_index_client() -> KeywordIndexClient:
+    settings = get_settings()
+    return OpenSearchKeywordIndexClient(
+        base_url=settings.opensearch_url,
+        index_name=settings.opensearch_index_name,
+    )

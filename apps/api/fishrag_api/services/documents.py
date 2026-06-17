@@ -80,6 +80,10 @@ def remove_stored_upload(upload: StoredUpload) -> None:
     upload.absolute_path.unlink(missing_ok=True)
 
 
+def resolve_stored_upload_path(upload_dir: Path, storage_path: str) -> Path:
+    return _resolve_upload_path(upload_dir, storage_path)
+
+
 def _resolve_upload_path(upload_dir: Path, storage_path: str) -> Path:
     base_dir = upload_dir.resolve()
     target_path = (base_dir / Path(storage_path)).resolve()

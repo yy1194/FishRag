@@ -27,7 +27,9 @@ def test_access_token_roundtrip() -> None:
 
 def test_access_token_rejects_tampering() -> None:
     token = create_access_token(subject="user-1", role="admin")
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    header, payload, signature = token.split(".")
+    tampered_signature = ("a" if signature[0] != "a" else "b") + signature[1:]
+    tampered = f"{header}.{payload}.{tampered_signature}"
 
     with pytest.raises(ValueError):
         decode_access_token(tampered)

@@ -12,6 +12,7 @@ def test_settings_defaults_are_loaded() -> None:
     assert settings.api_prefix == "/api/v1"
     assert settings.database_url.startswith("postgresql+asyncpg://")
     assert "http://localhost:5173" in settings.cors_origins
+    assert settings.opensearch_index_name == "fishrag_chunks"
     assert settings.llm_provider == "deepseek"
     assert settings.llm_base_url == "https://api.deepseek.com"
     assert settings.chat_model == "deepseek-v4-flash"
@@ -19,6 +20,7 @@ def test_settings_defaults_are_loaded() -> None:
     assert settings.embedding_provider == "siliconflow"
     assert settings.embedding_base_url == "https://api.siliconflow.cn/v1"
     assert settings.embedding_model == "BAAI/bge-m3"
+    assert settings.embedding_dimensions == 1024
     assert settings.reranker_provider == "siliconflow"
     assert settings.reranker_base_url == "https://api.siliconflow.cn/v1"
     assert settings.reranker_model == "BAAI/bge-reranker-v2-m3"
@@ -33,9 +35,11 @@ def test_settings_can_read_custom_values() -> None:
             "FISHRAG_LLM_API_KEY": "chat-key",
             "FISHRAG_CHAT_MODEL": "chat-model",
             "FISHRAG_LLM_THINKING": "enabled",
+            "FISHRAG_OPENSEARCH_INDEX_NAME": "custom_chunks",
             "FISHRAG_EMBEDDING_BASE_URL": "https://embedding.example/v1",
             "FISHRAG_EMBEDDING_API_KEY": "embedding-key",
             "FISHRAG_EMBEDDING_MODEL": "embedding-model",
+            "FISHRAG_EMBEDDING_DIMENSIONS": "768",
         }
     )
 
@@ -45,9 +49,11 @@ def test_settings_can_read_custom_values() -> None:
     assert settings.llm_api_key == "chat-key"
     assert settings.chat_model == "chat-model"
     assert settings.llm_thinking == "enabled"
+    assert settings.opensearch_index_name == "custom_chunks"
     assert settings.embedding_base_url == "https://embedding.example/v1"
     assert settings.embedding_api_key == "embedding-key"
     assert settings.embedding_model == "embedding-model"
+    assert settings.embedding_dimensions == 768
 
 
 def test_load_env_file_reads_simple_dotenv(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ def chunk_text(
     *,
     max_chars: int = 1200,
     overlap_chars: int = 150,
-    metadata: dict[str, str] | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> list[DocumentChunk]:
     if max_chars <= 0:
         raise ValueError("max_chars must be greater than zero.")

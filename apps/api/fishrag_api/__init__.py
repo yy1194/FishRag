@@ -1,0 +1,1 @@
+"""FishRag API application package."""

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from os import environ
 from pathlib import Path
-from typing import Mapping
 
 
 def _get(env: Mapping[str, str], key: str, default: str) -> str:
     value = env.get(key)
-    return value if value not in (None, "") else default
+    if value is None or value == "":
+        return default
+    return value
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -45,8 +47,12 @@ class Settings:
     log_level: str
     api_prefix: str
     cors_origins: tuple[str, ...]
+    jwt_secret_key: str
+    jwt_issuer: str
+    access_token_expire_minutes: int
     storage_dir: Path
     upload_dir: Path
+    max_upload_bytes: int
     database_url: str
     redis_url: str
     opensearch_url: str
@@ -82,8 +88,14 @@ class Settings:
                     "http://localhost:5173,http://127.0.0.1:5173",
                 )
             ),
+            jwt_secret_key=_get(source, "FISHRAG_JWT_SECRET_KEY", "change-me-in-local-env"),
+            jwt_issuer=_get(source, "FISHRAG_JWT_ISSUER", "fishrag"),
+            access_token_expire_minutes=int(
+                _get(source, "FISHRAG_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
+            ),
             storage_dir=storage_dir,
             upload_dir=Path(_get(source, "FISHRAG_UPLOAD_DIR", str(storage_dir / "uploads"))),
+            max_upload_bytes=int(_get(source, "FISHRAG_MAX_UPLOAD_BYTES", "52428800")),
             database_url=_get(
                 source,
                 "FISHRAG_DATABASE_URL",

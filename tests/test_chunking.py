@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from fishrag_rag.chunking import chunk_text
 
 

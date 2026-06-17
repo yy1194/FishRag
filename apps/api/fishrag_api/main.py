@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from fishrag_api.api.router import api_router
 from fishrag_common.config import get_settings
 from fishrag_common.logging import configure_logging
+
+from fishrag_api.api.router import api_router
+from fishrag_api.core.errors import install_error_handlers
+from fishrag_api.middleware import RequestContextMiddleware
 
 
 def create_app() -> FastAPI:
@@ -18,6 +20,7 @@ def create_app() -> FastAPI:
         docs_url=f"{settings.api_prefix}/docs",
         openapi_url=f"{settings.api_prefix}/openapi.json",
     )
+    app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -25,6 +28,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    install_error_handlers(app)
     app.include_router(api_router, prefix=settings.api_prefix)
 
     @app.get("/", tags=["root"])

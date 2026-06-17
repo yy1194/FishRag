@@ -37,7 +37,7 @@ include = ["fishrag_*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["apps/api", "packages/common", "packages/agent", "packages/rag"]
-addopts = "-q"
+addopts = "-q --basetemp .pytest-tmp -p no:cacheprovider"
 
 [tool.ruff]
 line-length = 100

@@ -47,6 +47,36 @@ async def test_openai_compatible_embedding_client_orders_vectors_by_index() -> N
 
 
 @pytest.mark.asyncio
+async def test_embedding_client_retries_retryable_provider_errors() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(
+            200,
+            json={"model": "embedding-model", "data": [{"index": 0, "embedding": [0.1, 0.2]}]},
+        )
+
+    client = OpenAICompatibleEmbeddingClient(
+        provider="test",
+        base_url="https://embedding.example/v1",
+        api_key="secret",
+        model="embedding-model",
+        expected_dimensions=2,
+        max_attempts=2,
+        retry_backoff_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.embed_texts(["text"])
+
+    assert result.vectors == [[0.1, 0.2]]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_embedding_client_rejects_missing_api_key() -> None:
     client = OpenAICompatibleEmbeddingClient(
         provider="test",

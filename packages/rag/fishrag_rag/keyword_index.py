@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from fishrag_rag.resilience import retry_async, should_retry_http_response
+
 
 class KeywordIndexError(Exception):
     """Base exception for keyword index failures."""
@@ -92,17 +94,21 @@ class OpenSearchKeywordIndexClient:
         base_url: str,
         index_name: str,
         timeout_seconds: float = 30.0,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 0.2,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.index_name = index_name.strip()
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, max_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self.transport = transport
 
     async def ensure_index(self) -> None:
         self._validate_settings()
         async with self._client() as client:
-            exists_response = await client.head(f"/{self.index_name}")
+            exists_response = await self._request(client, "HEAD", f"/{self.index_name}")
             if exists_response.status_code == 200:
                 return
             if exists_response.status_code != 404:
@@ -110,7 +116,9 @@ class OpenSearchKeywordIndexClient:
                     f"OpenSearch index check failed with HTTP {exists_response.status_code}."
                 )
 
-            create_response = await client.put(
+            create_response = await self._request(
+                client,
+                "PUT",
                 f"/{self.index_name}",
                 json=_index_mapping(),
             )
@@ -132,7 +140,9 @@ class OpenSearchKeywordIndexClient:
 
         body = _bulk_body(self.index_name, documents)
         async with self._client() as client:
-            response = await client.post(
+            response = await self._request(
+                client,
+                "POST",
                 f"/_bulk?refresh={str(refresh).lower()}",
                 content=body,
                 headers={"Content-Type": "application/x-ndjson"},
@@ -181,7 +191,12 @@ class OpenSearchKeywordIndexClient:
             },
         }
         async with self._client() as client:
-            response = await client.post(f"/{self.index_name}/_search", json=payload)
+            response = await self._request(
+                client,
+                "POST",
+                f"/{self.index_name}/_search",
+                json=payload,
+            )
 
         if response.status_code >= 400:
             raise KeywordIndexProviderError(
@@ -200,6 +215,24 @@ class OpenSearchKeywordIndexClient:
             base_url=self.base_url,
             timeout=self.timeout_seconds,
             transport=self.transport,
+        )
+
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        async def request() -> httpx.Response:
+            return await client.request(method, url, **kwargs)
+
+        return await retry_async(
+            request,
+            attempts=self.max_attempts,
+            retry_exceptions=(httpx.TransportError,),
+            should_retry_result=should_retry_http_response,
+            delay_seconds=self.retry_backoff_seconds,
         )
 
     def _validate_settings(self) -> None:

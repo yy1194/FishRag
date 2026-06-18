@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from fishrag_rag.resilience import retry_async, should_retry_http_response
 from fishrag_rag.retrieval import Citation, RagAnswer, RetrievalHit, no_evidence_answer
 
 
@@ -44,6 +45,8 @@ class OpenAICompatibleChatClient:
         api_key: str,
         model: str,
         timeout_seconds: float = 60.0,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 0.2,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.provider = provider
@@ -51,6 +54,8 @@ class OpenAICompatibleChatClient:
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, max_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self.transport = transport
 
     async def complete(self, *, messages: Sequence[dict[str, str]]) -> str:
@@ -61,15 +66,24 @@ class OpenAICompatibleChatClient:
         if not self.model:
             raise ChatConfigurationError("Chat model is required.")
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                json={"model": self.model, "messages": list(messages), "temperature": 0.2},
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
+        async def request() -> httpx.Response:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                return await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json={"model": self.model, "messages": list(messages), "temperature": 0.2},
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+
+        response = await retry_async(
+            request,
+            attempts=self.max_attempts,
+            retry_exceptions=(httpx.TransportError,),
+            should_retry_result=should_retry_http_response,
+            delay_seconds=self.retry_backoff_seconds,
+        )
         if response.status_code >= 400:
             raise ChatProviderError(
                 f"Chat provider returned HTTP {response.status_code}: {response.text}"

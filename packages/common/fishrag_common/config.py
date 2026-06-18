@@ -71,6 +71,9 @@ class Settings:
     reranker_base_url: str
     reranker_api_key: str
     reranker_model: str
+    http_timeout_seconds: float
+    http_max_attempts: int
+    http_retry_backoff_seconds: float
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -128,6 +131,11 @@ class Settings:
             ),
             reranker_api_key=_get(source, "FISHRAG_RERANKER_API_KEY", ""),
             reranker_model=_get(source, "FISHRAG_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+            http_timeout_seconds=float(_get(source, "FISHRAG_HTTP_TIMEOUT_SECONDS", "60")),
+            http_max_attempts=int(_get(source, "FISHRAG_HTTP_MAX_ATTEMPTS", "3")),
+            http_retry_backoff_seconds=float(
+                _get(source, "FISHRAG_HTTP_RETRY_BACKOFF_SECONDS", "0.2")
+            ),
         )
 
 

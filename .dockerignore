@@ -1,0 +1,12 @@
+.git
+.pytest-tmp*
+.ruff_cache
+.mypy_cache
+.venv
+__pycache__
+*.pyc
+.env
+storage/*
+!storage/.gitkeep
+apps/web/node_modules
+apps/web/dist

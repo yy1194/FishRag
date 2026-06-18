@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from fishrag_rag.resilience import retry_async, should_retry_http_response
+
 
 class EmbeddingError(Exception):
     """Base exception for embedding failures."""
@@ -52,6 +54,8 @@ class OpenAICompatibleEmbeddingClient:
         model: str,
         expected_dimensions: int | None = None,
         timeout_seconds: float = 60.0,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 0.2,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.provider = provider
@@ -60,6 +64,8 @@ class OpenAICompatibleEmbeddingClient:
         self.model = model
         self.expected_dimensions = expected_dimensions
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, max_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self.transport = transport
 
     async def embed_texts(self, texts: Sequence[str]) -> EmbeddingBatch:
@@ -95,11 +101,20 @@ class OpenAICompatibleEmbeddingClient:
         url = f"{self.base_url}/embeddings"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         request_json = {"model": self.model, "input": texts}
-        async with httpx.AsyncClient(
-            timeout=self.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = await client.post(url, json=request_json, headers=headers)
+        async def request() -> httpx.Response:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                return await client.post(url, json=request_json, headers=headers)
+
+        response = await retry_async(
+            request,
+            attempts=self.max_attempts,
+            retry_exceptions=(httpx.TransportError,),
+            should_retry_result=should_retry_http_response,
+            delay_seconds=self.retry_backoff_seconds,
+        )
 
         if response.status_code >= 400:
             raise EmbeddingProviderError(

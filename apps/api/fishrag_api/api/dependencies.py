@@ -64,6 +64,9 @@ def get_embedding_client() -> EmbeddingClient:
         api_key=settings.embedding_api_key,
         model=settings.embedding_model,
         expected_dimensions=settings.embedding_dimensions,
+        timeout_seconds=settings.http_timeout_seconds,
+        max_attempts=settings.http_max_attempts,
+        retry_backoff_seconds=settings.http_retry_backoff_seconds,
     )
 
 
@@ -72,6 +75,9 @@ def get_keyword_index_client() -> KeywordIndexClient:
     return OpenSearchKeywordIndexClient(
         base_url=settings.opensearch_url,
         index_name=settings.opensearch_index_name,
+        timeout_seconds=settings.http_timeout_seconds,
+        max_attempts=settings.http_max_attempts,
+        retry_backoff_seconds=settings.http_retry_backoff_seconds,
     )
 
 
@@ -82,6 +88,9 @@ def get_reranker_client() -> RerankerClient:
         base_url=settings.reranker_base_url,
         api_key=settings.reranker_api_key,
         model=settings.reranker_model,
+        timeout_seconds=settings.http_timeout_seconds,
+        max_attempts=settings.http_max_attempts,
+        retry_backoff_seconds=settings.http_retry_backoff_seconds,
     )
 
 
@@ -92,4 +101,7 @@ def get_chat_client() -> ChatClient:
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         model=settings.chat_model,
+        timeout_seconds=settings.http_timeout_seconds,
+        max_attempts=settings.http_max_attempts,
+        retry_backoff_seconds=settings.http_retry_backoff_seconds,
     )

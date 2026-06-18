@@ -79,6 +79,7 @@ from fishrag_rag.rerankers import (
     RerankerProviderError,
     RerankerResponseError,
 )
+from fishrag_rag.resilience import RETRYABLE_STATUS_CODES, retry_async, should_retry_http_response
 from fishrag_rag.retrieval import (
     Citation,
     RagAnswer,
@@ -135,6 +136,7 @@ __all__ = [
     "RerankerError",
     "RerankerProviderError",
     "RerankerResponseError",
+    "RETRYABLE_STATUS_CODES",
     "ChunkedDocument",
     "CleanedDocumentText",
     "TextSection",
@@ -162,6 +164,8 @@ __all__ = [
     "rag_search",
     "recall_at_k",
     "reciprocal_rank_fusion",
+    "retry_async",
     "sanitize_document_filename",
+    "should_retry_http_response",
     "validate_document_status_transition",
 ]

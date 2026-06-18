@@ -24,6 +24,9 @@ def test_settings_defaults_are_loaded() -> None:
     assert settings.reranker_provider == "siliconflow"
     assert settings.reranker_base_url == "https://api.siliconflow.cn/v1"
     assert settings.reranker_model == "BAAI/bge-reranker-v2-m3"
+    assert settings.http_timeout_seconds == 60
+    assert settings.http_max_attempts == 3
+    assert settings.http_retry_backoff_seconds == 0.2
 
 
 def test_settings_can_read_custom_values() -> None:
@@ -40,6 +43,9 @@ def test_settings_can_read_custom_values() -> None:
             "FISHRAG_EMBEDDING_API_KEY": "embedding-key",
             "FISHRAG_EMBEDDING_MODEL": "embedding-model",
             "FISHRAG_EMBEDDING_DIMENSIONS": "768",
+            "FISHRAG_HTTP_TIMEOUT_SECONDS": "12.5",
+            "FISHRAG_HTTP_MAX_ATTEMPTS": "4",
+            "FISHRAG_HTTP_RETRY_BACKOFF_SECONDS": "0.05",
         }
     )
 
@@ -54,6 +60,9 @@ def test_settings_can_read_custom_values() -> None:
     assert settings.embedding_api_key == "embedding-key"
     assert settings.embedding_model == "embedding-model"
     assert settings.embedding_dimensions == 768
+    assert settings.http_timeout_seconds == 12.5
+    assert settings.http_max_attempts == 4
+    assert settings.http_retry_backoff_seconds == 0.05
 
 
 def test_load_env_file_reads_simple_dotenv(tmp_path: Path) -> None:

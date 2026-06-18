@@ -51,6 +51,32 @@ async def test_openai_compatible_chat_client_extracts_message_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_client_retries_retryable_provider_errors() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503, text="busy")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "recovered"}}]})
+
+    client = OpenAICompatibleChatClient(
+        provider="test",
+        base_url="https://chat.example/v1",
+        api_key="secret",
+        model="chat-model",
+        max_attempts=2,
+        retry_backoff_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.complete(messages=[{"role": "user", "content": "hello"}])
+
+    assert result == "recovered"
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_chat_client_rejects_missing_api_key() -> None:
     client = OpenAICompatibleChatClient(
         provider="test",

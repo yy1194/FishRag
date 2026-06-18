@@ -50,6 +50,16 @@ class KeywordIndexBatchResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class KeywordSearchHit:
+    chunk_id: str
+    document_id: str
+    chunk_index: int
+    content: str
+    score: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class KeywordIndexClient(Protocol):
     index_name: str
 
@@ -63,6 +73,14 @@ class KeywordIndexClient(Protocol):
         refresh: bool = False,
     ) -> KeywordIndexBatchResult:
         """Index documents using the OpenSearch bulk API."""
+
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> list[KeywordSearchHit]:
+        """Search the keyword index."""
 
 
 class OpenSearchKeywordIndexClient:
@@ -139,6 +157,44 @@ class OpenSearchKeywordIndexClient:
             errors=errors,
         )
 
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> list[KeywordSearchHit]:
+        self._validate_settings()
+        if not query.strip():
+            return []
+
+        payload = {
+            "size": limit,
+            "query": {
+                "multi_match": {
+                    "query": query,
+                    "fields": [
+                        "content^4",
+                        "metadata.section_title^2",
+                        "metadata.section_path",
+                    ],
+                }
+            },
+        }
+        async with self._client() as client:
+            response = await client.post(f"/{self.index_name}/_search", json=payload)
+
+        if response.status_code >= 400:
+            raise KeywordIndexProviderError(
+                f"OpenSearch search failed with HTTP {response.status_code}: {response.text}"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise KeywordIndexResponseError("OpenSearch search response was not JSON.") from exc
+        if not isinstance(data, dict):
+            raise KeywordIndexResponseError("OpenSearch search response must be a JSON object.")
+        return _search_hits(data)
+
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=self.base_url,
@@ -179,6 +235,34 @@ def _bulk_errors(payload: dict[str, Any]) -> list[str]:
         if error:
             errors.append(json.dumps(error, ensure_ascii=False))
     return errors
+
+
+def _search_hits(payload: dict[str, Any]) -> list[KeywordSearchHit]:
+    raw_hits = payload.get("hits")
+    if not isinstance(raw_hits, dict):
+        raise KeywordIndexResponseError("OpenSearch search response is missing hits.")
+    items = raw_hits.get("hits")
+    if not isinstance(items, list):
+        raise KeywordIndexResponseError("OpenSearch search hits must be a list.")
+
+    hits: list[KeywordSearchHit] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("_source")
+        if not isinstance(source, dict):
+            continue
+        hits.append(
+            KeywordSearchHit(
+                chunk_id=str(source.get("chunk_id") or item.get("_id")),
+                document_id=str(source.get("document_id")),
+                chunk_index=int(source.get("chunk_index", 0)),
+                content=str(source.get("content", "")),
+                score=float(item.get("_score", 0.0)),
+                metadata=dict(source.get("metadata") or {}),
+            )
+        )
+    return hits
 
 
 def _index_mapping() -> dict[str, Any]:

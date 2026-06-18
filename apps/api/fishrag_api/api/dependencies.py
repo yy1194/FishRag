@@ -7,7 +7,9 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, status
 from fishrag_common.config import get_settings
 from fishrag_rag.embeddings import EmbeddingClient, OpenAICompatibleEmbeddingClient
+from fishrag_rag.generation import ChatClient, OpenAICompatibleChatClient
 from fishrag_rag.keyword_index import KeywordIndexClient, OpenSearchKeywordIndexClient
+from fishrag_rag.rerankers import OpenAICompatibleRerankerClient, RerankerClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fishrag_api.core.security import TokenPayload, decode_access_token
@@ -70,4 +72,24 @@ def get_keyword_index_client() -> KeywordIndexClient:
     return OpenSearchKeywordIndexClient(
         base_url=settings.opensearch_url,
         index_name=settings.opensearch_index_name,
+    )
+
+
+def get_reranker_client() -> RerankerClient:
+    settings = get_settings()
+    return OpenAICompatibleRerankerClient(
+        provider=settings.reranker_provider,
+        base_url=settings.reranker_base_url,
+        api_key=settings.reranker_api_key,
+        model=settings.reranker_model,
+    )
+
+
+def get_chat_client() -> ChatClient:
+    settings = get_settings()
+    return OpenAICompatibleChatClient(
+        provider=settings.llm_provider,
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.chat_model,
     )

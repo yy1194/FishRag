@@ -102,6 +102,49 @@ async def test_keyword_index_client_reports_bulk_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_keyword_index_client_searches_chunks() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "doc-1:chunk-1",
+                            "_score": 12.5,
+                            "_source": {
+                                "document_id": "doc-1",
+                                "chunk_id": "chunk-1",
+                                "chunk_index": 0,
+                                "content": "evidence text",
+                                "metadata": {"filename": "guide.md"},
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+
+    client = OpenSearchKeywordIndexClient(
+        base_url="http://opensearch:9200",
+        index_name="fishrag_chunks",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.search("evidence", limit=3)
+
+    assert len(result) == 1
+    assert result[0].chunk_id == "chunk-1"
+    assert result[0].score == 12.5
+    assert result[0].metadata["filename"] == "guide.md"
+    assert str(requests[0].url) == "http://opensearch:9200/fishrag_chunks/_search"
+    assert json.loads(requests[0].content)["size"] == 3
+
+
+@pytest.mark.asyncio
 async def test_keyword_index_client_rejects_missing_index_name() -> None:
     client = OpenSearchKeywordIndexClient(base_url="http://opensearch:9200", index_name="")
 

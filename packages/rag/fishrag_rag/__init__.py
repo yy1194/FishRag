@@ -17,6 +17,15 @@ from fishrag_rag.embeddings import (
     EmbeddingResponseError,
     OpenAICompatibleEmbeddingClient,
 )
+from fishrag_rag.generation import (
+    ChatClient,
+    ChatConfigurationError,
+    ChatGenerationError,
+    ChatProviderError,
+    ChatResponseError,
+    OpenAICompatibleChatClient,
+    generate_rag_answer,
+)
 from fishrag_rag.keyword_index import (
     KeywordIndexBatchResult,
     KeywordIndexClient,
@@ -25,6 +34,7 @@ from fishrag_rag.keyword_index import (
     KeywordIndexError,
     KeywordIndexProviderError,
     KeywordIndexResponseError,
+    KeywordSearchHit,
     OpenSearchKeywordIndexClient,
 )
 from fishrag_rag.parsing import (
@@ -44,6 +54,24 @@ from fishrag_rag.processing import (
     detect_text_sections,
     estimate_token_count,
 )
+from fishrag_rag.rerankers import (
+    OpenAICompatibleRerankerClient,
+    RerankerClient,
+    RerankerConfigurationError,
+    RerankerError,
+    RerankerProviderError,
+    RerankerResponseError,
+)
+from fishrag_rag.retrieval import (
+    Citation,
+    RagAnswer,
+    RagSearchResult,
+    RetrievalHit,
+    build_citations,
+    no_evidence_answer,
+    rag_search,
+    reciprocal_rank_fusion,
+)
 from fishrag_rag.schemas import DocumentChunk
 
 __all__ = [
@@ -57,6 +85,11 @@ __all__ = [
     "EmbeddingError",
     "EmbeddingProviderError",
     "EmbeddingResponseError",
+    "ChatClient",
+    "ChatConfigurationError",
+    "ChatGenerationError",
+    "ChatProviderError",
+    "ChatResponseError",
     "KeywordIndexBatchResult",
     "KeywordIndexClient",
     "KeywordIndexConfigurationError",
@@ -64,22 +97,39 @@ __all__ = [
     "KeywordIndexError",
     "KeywordIndexProviderError",
     "KeywordIndexResponseError",
+    "KeywordSearchHit",
     "OpenAICompatibleEmbeddingClient",
+    "OpenAICompatibleChatClient",
+    "OpenAICompatibleRerankerClient",
     "OpenSearchKeywordIndexClient",
     "ParsedDocument",
+    "Citation",
+    "RagAnswer",
+    "RagSearchResult",
+    "RetrievalHit",
+    "RerankerClient",
+    "RerankerConfigurationError",
+    "RerankerError",
+    "RerankerProviderError",
+    "RerankerResponseError",
     "ChunkedDocument",
     "CleanedDocumentText",
     "TextSection",
     "UnsupportedDocumentFormatError",
     "build_chunked_document",
+    "build_citations",
     "build_document_storage_path",
     "can_transition_document_status",
     "chunk_text",
     "clean_document_text",
     "detect_text_sections",
     "estimate_token_count",
+    "generate_rag_answer",
     "infer_document_type",
+    "no_evidence_answer",
     "parse_document_file",
+    "rag_search",
+    "reciprocal_rank_fusion",
     "sanitize_document_filename",
     "validate_document_status_transition",
 ]

@@ -27,6 +27,8 @@ type View = "chat" | "documents" | "tasks" | "approvals" | "evaluation";
 type DocumentStatus = "uploaded" | "processing" | "indexed" | "failed";
 type TodoStatus = "pending" | "in_progress" | "completed" | "blocked";
 type ApprovalStatus = "pending" | "approved" | "rejected";
+type EvaluationJobStatus = "queued" | "running" | "completed" | "failed";
+type EvaluationJobMode = "scored_dataset" | "auto_rag";
 
 type SessionItem = {
   id: string;
@@ -71,6 +73,49 @@ type ApprovalItem = {
   risk: string;
   requester: string;
   createdAt: string;
+};
+
+type EvaluationMetricMap = Record<string, number>;
+
+type EvaluationScores = {
+  recall_at_k: EvaluationMetricMap;
+  precision_at_k: EvaluationMetricMap;
+  ndcg_at_k: EvaluationMetricMap;
+  mrr: number;
+  faithfulness: number;
+  citation_coverage: number;
+  total_examples?: number;
+  answered_examples?: number;
+};
+
+type EvaluationReport = {
+  ks: number[];
+  aggregate: EvaluationScores;
+  examples: Array<{
+    id: string;
+    query: string;
+    scores: EvaluationScores & {
+      relevant_retrieved: number;
+      relevant_cited: number;
+      retrieved_count: number;
+      cited_count: number;
+    };
+  }>;
+};
+
+type EvaluationJob = {
+  id: string;
+  name: string;
+  status: EvaluationJobStatus;
+  mode: EvaluationJobMode;
+  ks: number[];
+  example_count: number;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+  report?: EvaluationReport | null;
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -177,6 +222,52 @@ const approvalsSeed: ApprovalItem[] = [
   },
 ];
 
+const evaluationJobsSeed: EvaluationJob[] = [
+  {
+    id: "eval-local-demo",
+    name: "医学指南回归评测",
+    status: "completed",
+    mode: "scored_dataset",
+    ks: [1, 3, 5, 10],
+    example_count: 3,
+    created_at: "2026-06-18T08:00:00.000Z",
+    updated_at: "2026-06-18T08:02:00.000Z",
+    started_at: "2026-06-18T08:00:10.000Z",
+    completed_at: "2026-06-18T08:02:00.000Z",
+    report: {
+      ks: [1, 3, 5, 10],
+      aggregate: {
+        recall_at_k: { "1": 0.67, "3": 0.82, "5": 0.89, "10": 0.93 },
+        precision_at_k: { "1": 0.67, "3": 0.56, "5": 0.44, "10": 0.28 },
+        ndcg_at_k: { "1": 0.67, "3": 0.76, "5": 0.81, "10": 0.84 },
+        mrr: 0.72,
+        faithfulness: 0.86,
+        citation_coverage: 0.91,
+        total_examples: 3,
+        answered_examples: 2,
+      },
+      examples: [
+        {
+          id: "case-1",
+          query: "高血压患者如何随访？",
+          scores: {
+            recall_at_k: { "1": 1, "3": 1, "5": 1, "10": 1 },
+            precision_at_k: { "1": 1, "3": 0.67, "5": 0.4, "10": 0.2 },
+            ndcg_at_k: { "1": 1, "3": 1, "5": 1, "10": 1 },
+            mrr: 1,
+            faithfulness: 1,
+            citation_coverage: 1,
+            relevant_retrieved: 2,
+            relevant_cited: 2,
+            retrieved_count: 5,
+            cited_count: 2,
+          },
+        },
+      ],
+    },
+  },
+];
+
 const viewItems: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: "chat", label: "问答", icon: MessageSquareText },
   { id: "documents", label: "文档", icon: FileText },
@@ -205,6 +296,18 @@ const approvalText: Record<ApprovalStatus, string> = {
   rejected: "已拒绝",
 };
 
+const evaluationStatusText: Record<EvaluationJobStatus, string> = {
+  queued: "排队中",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+};
+
+const evaluationModeText: Record<EvaluationJobMode, string> = {
+  scored_dataset: "离线评分",
+  auto_rag: "自动 RAG",
+};
+
 export function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [token, setToken] = useState("");
@@ -217,6 +320,12 @@ export function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [todos, setTodos] = useState(todosSeed);
   const [approvals, setApprovals] = useState(approvalsSeed);
+  const [evaluationJobs, setEvaluationJobs] = useState(evaluationJobsSeed);
+  const [selectedEvaluationJobId, setSelectedEvaluationJobId] = useState(
+    evaluationJobsSeed[0]?.id ?? "",
+  );
+  const [isEvaluationBusy, setIsEvaluationBusy] = useState(false);
+  const [evaluationError, setEvaluationError] = useState("");
   const [prompt, setPrompt] = useState("");
   const [systemState, setSystemState] = useState("本地演示");
   const [isBusy, setIsBusy] = useState(false);
@@ -225,6 +334,8 @@ export function App() {
   const indexedDocuments = documents.filter((document) => document.status === "indexed").length;
   const pendingApprovals = approvals.filter((approval) => approval.status === "pending").length;
   const completedTodos = todos.filter((todo) => todo.status === "completed").length;
+  const selectedEvaluationJob =
+    evaluationJobs.find((job) => job.id === selectedEvaluationJobId) ?? evaluationJobs[0];
 
   const latestCitations = useMemo(
     () => messages.flatMap((message) => message.citations ?? []).slice(-4),
@@ -389,6 +500,72 @@ export function App() {
     }
   }
 
+  async function refreshEvaluationJobs() {
+    setIsEvaluationBusy(true);
+    setEvaluationError("");
+    try {
+      const result = await apiRequest<{ jobs: EvaluationJob[] }>("/evaluations/rag/jobs");
+      if (result.jobs.length > 0) {
+        setEvaluationJobs(result.jobs);
+        setSelectedEvaluationJobId((current) =>
+          result.jobs.some((job) => job.id === current) ? current : result.jobs[0].id,
+        );
+      }
+      setSystemState("已连接 API");
+    } catch {
+      setEvaluationError("当前显示本地演示数据");
+      setSystemState("本地演示");
+    } finally {
+      setIsEvaluationBusy(false);
+    }
+  }
+
+  async function createEvaluationJob() {
+    setIsEvaluationBusy(true);
+    setEvaluationError("");
+    try {
+      const job = await apiRequest<EvaluationJob>("/evaluations/rag/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "前端回归评测",
+          run_rag: false,
+          run_in_background: false,
+          ks: [1, 3, 5, 10],
+          examples: [
+            {
+              id: `ui-${Date.now()}`,
+              query: "高血压患者如何随访？",
+              relevant_chunk_ids: ["chunk-guideline-1", "chunk-guideline-2"],
+              retrieved_chunk_ids: ["chunk-guideline-1", "chunk-other", "chunk-guideline-2"],
+              cited_chunk_ids: ["chunk-guideline-1"],
+              answer: "指南建议结合风险分层进行随访，并引用相关证据 [C1]。",
+            },
+          ],
+        }),
+      });
+      setEvaluationJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      setSelectedEvaluationJobId(job.id);
+      setSystemState("已连接 API");
+    } catch {
+      const now = new Date().toISOString();
+      const demoJob: EvaluationJob = {
+        ...evaluationJobsSeed[0],
+        id: crypto.randomUUID(),
+        name: "本地回归评测",
+        created_at: now,
+        updated_at: now,
+        started_at: now,
+        completed_at: now,
+      };
+      setEvaluationJobs((current) => [demoJob, ...current]);
+      setSelectedEvaluationJobId(demoJob.id);
+      setEvaluationError("评测 API 不可用，已创建本地演示任务");
+      setSystemState("本地演示");
+    } finally {
+      setIsEvaluationBusy(false);
+    }
+  }
+
   function decideApproval(id: string, status: ApprovalStatus) {
     setApprovals((current) =>
       current.map((approval) => (approval.id === id ? { ...approval, status } : approval)),
@@ -406,6 +583,13 @@ export function App() {
     setActiveSessionId(next.id);
     setMessages([]);
     setView("chat");
+  }
+
+  function openView(nextView: View) {
+    setView(nextView);
+    if (nextView === "evaluation") {
+      void refreshEvaluationJobs();
+    }
   }
 
   if (!token) {
@@ -495,7 +679,7 @@ export function App() {
                       : "text-zinc-600 hover:bg-zinc-100"
                   }`}
                   key={item.id}
-                  onClick={() => setView(item.id)}
+                  onClick={() => openView(item.id)}
                 >
                   <Icon size={17} />
                   <span className="hidden lg:inline">{item.label}</span>
@@ -570,7 +754,17 @@ export function App() {
           {view === "approvals" && (
             <ApprovalsView approvals={approvals} onDecision={decideApproval} />
           )}
-          {view === "evaluation" && <EvaluationView />}
+          {view === "evaluation" && (
+            <EvaluationView
+              error={evaluationError}
+              isBusy={isEvaluationBusy}
+              jobs={evaluationJobs}
+              onCreateJob={createEvaluationJob}
+              onRefresh={refreshEvaluationJobs}
+              onSelectJob={setSelectedEvaluationJobId}
+              selectedJob={selectedEvaluationJob}
+            />
+          )}
         </section>
       </div>
     </main>
@@ -853,23 +1047,61 @@ function ApprovalsView({
   );
 }
 
-function EvaluationView() {
+function EvaluationView({
+  error,
+  isBusy,
+  jobs,
+  onCreateJob,
+  onRefresh,
+  onSelectJob,
+  selectedJob,
+}: {
+  error: string;
+  isBusy: boolean;
+  jobs: EvaluationJob[];
+  onCreateJob: () => void;
+  onRefresh: () => void;
+  onSelectJob: (jobId: string) => void;
+  selectedJob?: EvaluationJob;
+}) {
+  const report = selectedJob?.report ?? evaluationJobsSeed[0].report;
+  const aggregate = report?.aggregate;
   const metrics = [
-    { label: "Recall@5", value: "0.82", delta: "+0.04" },
-    { label: "MRR", value: "0.68", delta: "+0.02" },
-    { label: "nDCG", value: "0.74", delta: "+0.01" },
-    { label: "Citation", value: "0.91", delta: "+0.05" },
+    { label: "Recall@5", value: formatScore(metricAt(aggregate?.recall_at_k, 5)) },
+    { label: "MRR", value: formatScore(aggregate?.mrr) },
+    { label: "nDCG@5", value: formatScore(metricAt(aggregate?.ndcg_at_k, 5)) },
+    { label: "Citation", value: formatScore(aggregate?.citation_coverage) },
   ];
+  const examples = report?.examples ?? [];
+
   return (
     <div className="flex-1 overflow-auto px-4 py-5 md:px-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <BarChart3 size={18} className="text-indigo-700" />
           <h3 className="text-base font-semibold">RAG 评估</h3>
         </div>
-        <button className="grid h-9 w-9 place-items-center rounded-md border border-zinc-300 bg-white text-zinc-600">
-          <RefreshCw size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          {error && <span className="text-xs text-amber-700">{error}</span>}
+          <button
+            aria-label="刷新评测任务"
+            className="grid h-9 w-9 place-items-center rounded-md border border-zinc-300 bg-white text-zinc-600 disabled:opacity-50"
+            disabled={isBusy}
+            onClick={onRefresh}
+            type="button"
+          >
+            <RefreshCw size={16} />
+          </button>
+          <button
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white disabled:opacity-50"
+            disabled={isBusy}
+            onClick={onCreateJob}
+            type="button"
+          >
+            <BarChart3 size={16} />
+            新建评测
+          </button>
+        </div>
       </div>
       <div className="grid gap-3 md:grid-cols-4">
         {metrics.map((metric) => (
@@ -877,32 +1109,146 @@ function EvaluationView() {
             <p className="text-xs text-zinc-500">{metric.label}</p>
             <div className="mt-3 flex items-end justify-between">
               <span className="text-2xl font-semibold">{metric.value}</span>
-              <span className="text-sm text-emerald-700">{metric.delta}</span>
+              <span className="text-sm text-zinc-500">{selectedJob?.example_count ?? 0} 例</span>
             </div>
           </div>
         ))}
       </div>
-      <div className="mt-4 rounded-md border border-zinc-200 bg-white p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Search size={17} className="text-teal-700" />
-          <h4 className="text-sm font-semibold">评测集</h4>
+      <div className="mt-4 grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="rounded-md border border-zinc-200 bg-white">
+          <div className="flex min-h-12 items-center justify-between border-b border-zinc-100 px-4">
+            <div className="flex items-center gap-2">
+              <Search size={17} className="text-teal-700" />
+              <h4 className="text-sm font-semibold">历史任务</h4>
+            </div>
+            <span className="text-xs text-zinc-500">{jobs.length}</span>
+          </div>
+          <div className="max-h-[520px] overflow-auto p-2">
+            {jobs.map((job) => (
+              <button
+                className={`mb-2 w-full rounded-md border p-3 text-left ${
+                  selectedJob?.id === job.id
+                    ? "border-teal-300 bg-teal-50"
+                    : "border-zinc-200 bg-white hover:bg-zinc-50"
+                }`}
+                key={job.id}
+                onClick={() => onSelectJob(job.id)}
+                type="button"
+              >
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{job.name}</span>
+                  <EvaluationStatusBadge status={job.status} />
+                </div>
+                <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
+                  <span>{evaluationModeText[job.mode]}</span>
+                  <span>{formatDate(job.updated_at)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="space-y-3">
-          {["高血压患者如何随访？", "药品不良反应如何记录？", "无证据回答如何处理？"].map(
-            (item, index) => (
-              <div className="flex min-h-11 items-center gap-3 border-t border-zinc-100 pt-3" key={item}>
-                <span className="grid h-7 w-7 place-items-center rounded-md bg-zinc-100 text-xs font-semibold">
-                  {index + 1}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-sm">{item}</span>
-                <span className="text-xs text-zinc-500">通过</span>
+
+        <div className="rounded-md border border-zinc-200 bg-white">
+          <div className="flex min-h-12 items-center justify-between border-b border-zinc-100 px-4">
+            <h4 className="text-sm font-semibold">{selectedJob?.name ?? "评测报告"}</h4>
+            {selectedJob && <EvaluationStatusBadge status={selectedJob.status} />}
+          </div>
+          <div className="grid gap-4 p-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="space-y-3 rounded-md border border-zinc-100 bg-zinc-50 p-3 text-sm">
+              <StateRow label="模式" value={selectedJob ? evaluationModeText[selectedJob.mode] : "--"} />
+              <StateRow label="样本数" value={String(selectedJob?.example_count ?? 0)} />
+              <StateRow label="K 值" value={selectedJob?.ks.join(", ") ?? "--"} />
+              <StateRow label="更新时间" value={selectedJob ? formatDate(selectedJob.updated_at) : "--"} />
+              <StateRow
+                label="回答样本"
+                value={String(aggregate?.answered_examples ?? 0)}
+              />
+              {selectedJob?.error && <p className="text-xs text-rose-700">{selectedJob.error}</p>}
+            </div>
+            <div className="min-w-0">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-semibold">样本明细</span>
+                <span className="text-xs text-zinc-500">{examples.length}</span>
               </div>
-            ),
-          )}
+              <div className="space-y-2">
+                {examples.length === 0 && (
+                  <div className="rounded-md border border-dashed border-zinc-200 p-4 text-sm text-zinc-500">
+                    暂无样本明细
+                  </div>
+                )}
+                {examples.map((example, index) => (
+                  <div
+                    className="grid gap-3 rounded-md border border-zinc-100 p-3 md:grid-cols-[minmax(0,1fr)_160px]"
+                    key={example.id}
+                  >
+                    <div className="min-w-0">
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="grid h-6 w-6 place-items-center rounded-md bg-zinc-100 text-xs font-semibold">
+                          {index + 1}
+                        </span>
+                        <span className="truncate text-sm font-medium">{example.query}</span>
+                      </div>
+                      <p className="text-xs text-zinc-500">{example.id}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <StateRow
+                        label="Recall@5"
+                        value={formatScore(metricAt(example.scores.recall_at_k, 5))}
+                      />
+                      <StateRow
+                        label="Citation"
+                        value={formatScore(example.scores.citation_coverage)}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+function EvaluationStatusBadge({ status }: { status: EvaluationJobStatus }) {
+  const className =
+    status === "completed"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : status === "running"
+        ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+        : status === "failed"
+          ? "bg-rose-50 text-rose-700 border-rose-200"
+          : "bg-amber-50 text-amber-700 border-amber-200";
+  return (
+    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${className}`}>
+      {evaluationStatusText[status]}
+    </span>
+  );
+}
+
+function metricAt(values: EvaluationMetricMap | undefined, k: number) {
+  return values?.[String(k)];
+}
+
+function formatScore(value: number | undefined) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "--";
+  }
+  return value.toFixed(2);
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function StatusBadge({ status }: { status: DocumentStatus }) {

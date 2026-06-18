@@ -61,7 +61,37 @@ services:
       timeout: 10s
       retries: 8
 
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.54.1}
+    container_name: fishrag-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
+    container_name: fishrag-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-fishrag}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
 volumes:
   postgres_data:
   redis_data:
   opensearch_data:
+  grafana_data:

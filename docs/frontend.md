@@ -65,9 +65,12 @@ VITE_API_BASE_URL=http://localhost:8000/api/v1
 
 ### RAG 评估
 
-- 展示 recall@k、MRR、faithfulness、citation coverage 等评估指标。
-- 展示召回链路健康度和质量检查项。
-- 当前为静态评估面板，阶段 8 会接入真实评测任务和指标统计。
+- 调用 `GET /api/v1/evaluations/rag/jobs` 展示历史评测任务。
+- 调用 `POST /api/v1/evaluations/rag/jobs` 创建离线回归评测任务。
+- 展示 `queued`、`running`、`completed`、`failed` 状态。
+- 展示 recall@k、MRR、nDCG、faithfulness、citation coverage 等聚合指标。
+- 展示评测任务的样本明细、样本数量、K 值和更新时间。
+- 后端不可用时保留本地演示数据，便于继续查看界面。
 
 ## 验证命令
 
@@ -84,4 +87,4 @@ npm --prefix apps/web run build
 - 增加 token 持久化、登出清理和 401 自动处理。
 - 为文档入库增加解析进度轮询。
 - 为 Agent 运行增加事件流展示。
-- 在阶段 8 接入真实 RAG 评估任务、Playwright 端到端测试和可观测性面板。
+- 增加 Playwright 端到端测试和可观测性面板。

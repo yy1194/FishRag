@@ -52,6 +52,7 @@ class User(Base):
 
     sessions: Mapped[list[ChatSession]] = relationship(back_populates="user")
     memories: Mapped[list[Memory]] = relationship(back_populates="user")
+    rag_evaluation_jobs: Mapped[list[RagEvaluationJob]] = relationship(back_populates="owner")
 
 
 class ChatSession(Base):
@@ -180,3 +181,31 @@ class Memory(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="memories")
+
+
+class RagEvaluationJob(Base):
+    __tablename__ = "rag_evaluation_jobs"
+    __table_args__ = (
+        Index("ix_rag_evaluation_jobs_status_updated_at", "status", "updated_at"),
+        Index("ix_rag_evaluation_jobs_owner_user_id", "owner_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    ks: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    example_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    examples: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    owner: Mapped[User | None] = relationship(back_populates="rag_evaluation_jobs")

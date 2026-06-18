@@ -34,7 +34,7 @@ POST /api/v1/evaluations/rag/score
 
 ## 批量评测任务
 
-阶段 8 第二块新增评测任务 API。当前任务以同步方式执行，并写入内存版历史报告存储；后续可以替换为数据库表和后台队列。
+阶段 8 第二块新增评测任务 API，阶段 8 第三块已将任务持久化到 PostgreSQL，并补齐任务状态流转。当前后台执行使用 FastAPI 本地 `BackgroundTasks`，后续可以替换为 Celery/RQ。
 
 ### 创建任务
 
@@ -59,6 +59,7 @@ POST /api/v1/evaluations/rag/jobs
 {
   "name": "Auto RAG evaluation",
   "run_rag": true,
+  "run_in_background": false,
   "ks": [1, 3, 5],
   "limit": 10,
   "use_reranker": true,
@@ -80,6 +81,8 @@ POST /api/v1/evaluations/rag/jobs
 
 随后再调用同一套指标计算逻辑生成评估报告。
 
+`run_in_background=false` 时，接口会同步执行任务并返回最终状态。`run_in_background=true` 时，接口先返回 `queued` 状态，并由本地后台任务继续执行；客户端可以通过任务详情接口轮询最终报告。
+
 ### 查询任务列表
 
 ```text
@@ -96,6 +99,7 @@ GET /api/v1/evaluations/rag/jobs/{job_id}
 
 | 状态 | 说明 |
 | --- | --- |
+| `queued` | 任务已写入数据库，等待执行 |
 | `running` | 任务正在执行 |
 | `completed` | 任务已完成，`report` 中包含评估报告 |
 | `failed` | 任务失败，`error` 中包含失败原因 |
@@ -119,6 +123,31 @@ GET /api/v1/evaluations/rag/jobs/{job_id}
 ```
 
 空行会被忽略。任意一行格式错误时，接口返回 `invalid_rag_evaluation_jsonl`，并在 `details.line` 中标记错误行号。
+
+## 数据库存储
+
+评测任务持久化在 `rag_evaluation_jobs` 表中，迁移文件为：
+
+```text
+migrations/versions/20260618_0002_rag_evaluation_jobs.py
+```
+
+核心字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 任务 ID |
+| `owner_user_id` | 后续接入登录用户后的任务归属 |
+| `name` | 任务名称 |
+| `status` | `queued`、`running`、`completed`、`failed` |
+| `mode` | `scored_dataset` 或 `auto_rag` |
+| `ks` | 参与评估的 k 值 |
+| `parameters` | 评测参数快照 |
+| `examples` | 评测样本快照 |
+| `report` | 完整评估报告 JSON |
+| `error` | 失败原因 |
+| `started_at` | 开始执行时间 |
+| `completed_at` | 完成或失败时间 |
 
 ## 评测样本格式
 
@@ -180,7 +209,7 @@ supported_citations / cited_citations
 
 ## 后续扩展
 
-- 将内存版历史报告替换为数据库持久化。
-- 将同步评测任务迁移到 Celery/RQ 后台队列。
+- 将 FastAPI 本地后台任务迁移到 Celery/RQ 后台队列。
+- 为评测任务增加用户权限隔离、取消任务和重试任务。
 - 增加模型裁判版 faithfulness、answer relevance 和 groundedness。
 - 将评估指标接入前端评估面板和 Prometheus 监控。

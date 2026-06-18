@@ -11,7 +11,7 @@ from fishrag_api.api.dependencies import (
     get_reranker_client,
     get_session,
 )
-from fishrag_api.api.routes.evaluations import evaluation_job_store
+from fishrag_api.db.models import RagEvaluationJob
 from fishrag_api.main import create_app
 from fishrag_common.config import Settings, get_settings
 from fishrag_rag.embeddings import EmbeddingBatch
@@ -30,15 +30,51 @@ class FakeMappingResult:
         return self.rows
 
 
+class FakeScalarResult:
+    def __init__(self, jobs: list[RagEvaluationJob]) -> None:
+        self.jobs = jobs
+
+    def scalars(self) -> FakeScalarResult:
+        return self
+
+    def all(self) -> list[RagEvaluationJob]:
+        return self.jobs
+
+
 class FakeRagSession:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
+        self.jobs: dict[str, RagEvaluationJob] = {}
+        self.commit_count = 0
+
+    def add(self, instance: object) -> None:
+        if isinstance(instance, RagEvaluationJob):
+            self.jobs[instance.id] = instance
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+    async def refresh(self, _: object) -> None:
+        return None
+
+    async def get(
+        self,
+        model: type[RagEvaluationJob],
+        job_id: str,
+    ) -> RagEvaluationJob | None:
+        if model is RagEvaluationJob:
+            return self.jobs.get(job_id)
+        return None
 
     async def execute(
         self,
         _: object,
         params: Mapping[str, Any] | None = None,
-    ) -> FakeMappingResult:
+    ) -> FakeMappingResult | FakeScalarResult:
+        if params is not None and "query_vector" in params:
+            return FakeMappingResult(self.rows)
+        jobs = sorted(self.jobs.values(), key=lambda job: job.updated_at, reverse=True)
+        return FakeScalarResult(jobs)
         return FakeMappingResult(self.rows)
 
 
@@ -137,7 +173,13 @@ def test_score_rag_evaluation_api_rejects_empty_dataset() -> None:
 
 
 def test_create_rag_evaluation_job_scores_jsonl_and_stores_history() -> None:
-    evaluation_job_store.clear()
+    fake_session = FakeRagSession([])
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[FakeRagSession]:
+        yield fake_session
+
+    app.dependency_overrides[get_session] = override_session
     dataset_jsonl = "\n".join(
         [
             (
@@ -157,7 +199,7 @@ def test_create_rag_evaluation_job_scores_jsonl_and_stores_history() -> None:
         ]
     )
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     response = client.post(
         "/api/v1/evaluations/rag/jobs",
         json={
@@ -184,10 +226,10 @@ def test_create_rag_evaluation_job_scores_jsonl_and_stores_history() -> None:
     assert detail.json()["id"] == job_id
     assert listing.status_code == 200
     assert listing.json()["jobs"][0]["id"] == job_id
+    assert fake_session.commit_count == 3
 
 
 def test_create_rag_evaluation_job_can_auto_run_rag_pipeline() -> None:
-    evaluation_job_store.clear()
     fake_session = FakeRagSession(
         [
             {
@@ -260,9 +302,59 @@ def test_create_rag_evaluation_job_can_auto_run_rag_pipeline() -> None:
     assert fake_chat.calls == 1
 
 
+def test_create_rag_evaluation_job_can_run_in_background() -> None:
+    fake_session = FakeRagSession([])
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[FakeRagSession]:
+        yield fake_session
+
+    app.dependency_overrides[get_session] = override_session
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/evaluations/rag/jobs",
+        json={
+            "name": "Background eval",
+            "run_rag": False,
+            "run_in_background": True,
+            "ks": [1],
+            "examples": [
+                {
+                    "id": "case-1",
+                    "query": "question",
+                    "relevant_chunk_ids": ["chunk-a"],
+                    "retrieved_chunk_ids": ["chunk-a"],
+                    "cited_chunk_ids": ["chunk-a"],
+                    "answer": "Answer [C1].",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "queued"
+
+    detail = client.get(f"/api/v1/evaluations/rag/jobs/{body['id']}")
+
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["status"] == "completed"
+    assert detail_body["started_at"] is not None
+    assert detail_body["completed_at"] is not None
+    assert detail_body["report"]["aggregate"]["recall_at_k"]["1"] == 1.0
+
+
 def test_create_rag_evaluation_job_rejects_invalid_jsonl() -> None:
-    evaluation_job_store.clear()
-    response = TestClient(create_app()).post(
+    fake_session = FakeRagSession([])
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[FakeRagSession]:
+        yield fake_session
+
+    app.dependency_overrides[get_session] = override_session
+    response = TestClient(app).post(
         "/api/v1/evaluations/rag/jobs",
         json={
             "run_rag": False,
@@ -272,3 +364,4 @@ def test_create_rag_evaluation_job_rejects_invalid_jsonl() -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_rag_evaluation_jsonl"
+    assert fake_session.jobs == {}

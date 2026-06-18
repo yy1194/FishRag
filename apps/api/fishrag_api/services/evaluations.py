@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 from uuid import uuid4
 
-from fishrag_rag.evaluation import RagEvaluationReport
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-RagEvaluationJobStatus = Literal["running", "completed", "failed"]
+from fishrag_api.db.models import RagEvaluationJob, utc_now
+
+RagEvaluationJobStatus = Literal["queued", "running", "completed", "failed"]
 RagEvaluationJobMode = Literal["scored_dataset", "auto_rag"]
 
 
@@ -21,86 +24,147 @@ class RagEvaluationJobRecord:
     example_count: int
     created_at: datetime
     updated_at: datetime
-    report: RagEvaluationReport | None = None
+    owner_user_id: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    parameters: dict[str, Any] | None = None
+    examples: list[dict[str, Any]] | None = None
+    report: dict[str, Any] | None = None
     error: str | None = None
 
 
-class InMemoryRagEvaluationJobStore:
-    def __init__(self) -> None:
-        self._jobs: dict[str, RagEvaluationJobRecord] = {}
-
-    def create(
+class SqlAlchemyRagEvaluationJobStore:
+    async def create_queued(
         self,
+        session: AsyncSession,
         *,
         name: str,
         mode: RagEvaluationJobMode,
         ks: tuple[int, ...],
         example_count: int,
+        parameters: dict[str, Any],
+        examples: list[dict[str, Any]],
+        owner_user_id: str | None = None,
     ) -> RagEvaluationJobRecord:
-        now = _utc_now()
-        job = RagEvaluationJobRecord(
+        now = utc_now()
+        job = RagEvaluationJob(
             id=str(uuid4()),
+            owner_user_id=owner_user_id,
             name=name.strip() or "RAG Evaluation",
-            status="running",
+            status="queued",
             mode=mode,
-            ks=ks,
+            ks=list(ks),
             example_count=example_count,
+            parameters=dict(parameters),
+            examples=list(examples),
             created_at=now,
             updated_at=now,
         )
-        self._jobs[job.id] = job
-        return job
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return _to_record(job)
 
-    def complete(
+    async def mark_running(
         self,
+        session: AsyncSession,
+        job_id: str,
+    ) -> RagEvaluationJobRecord:
+        job = await _get_job(session, job_id)
+        now = utc_now()
+        job.status = "running"
+        job.started_at = now
+        job.completed_at = None
+        job.updated_at = now
+        job.error = None
+        await session.commit()
+        await session.refresh(job)
+        return _to_record(job)
+
+    async def complete(
+        self,
+        session: AsyncSession,
         job_id: str,
         *,
-        report: RagEvaluationReport,
+        report: dict[str, Any],
     ) -> RagEvaluationJobRecord:
-        job = self.get(job_id)
-        updated = RagEvaluationJobRecord(
-            id=job.id,
-            name=job.name,
-            status="completed",
-            mode=job.mode,
-            ks=job.ks,
-            example_count=job.example_count,
-            created_at=job.created_at,
-            updated_at=_utc_now(),
-            report=report,
+        job = await _get_job(session, job_id)
+        now = utc_now()
+        job.status = "completed"
+        job.report = dict(report)
+        job.error = None
+        job.completed_at = now
+        job.updated_at = now
+        await session.commit()
+        await session.refresh(job)
+        return _to_record(job)
+
+    async def fail(
+        self,
+        session: AsyncSession,
+        job_id: str,
+        *,
+        error: str,
+    ) -> RagEvaluationJobRecord:
+        job = await _get_job(session, job_id)
+        now = utc_now()
+        job.status = "failed"
+        job.error = error
+        job.completed_at = now
+        job.updated_at = now
+        await session.commit()
+        await session.refresh(job)
+        return _to_record(job)
+
+    async def get(self, session: AsyncSession, job_id: str) -> RagEvaluationJobRecord:
+        return _to_record(await _get_job(session, job_id))
+
+    async def list(self, session: AsyncSession, *, limit: int = 50) -> list[RagEvaluationJobRecord]:
+        result = await session.execute(
+            select(RagEvaluationJob).order_by(RagEvaluationJob.updated_at.desc()).limit(limit)
         )
-        self._jobs[job_id] = updated
-        return updated
-
-    def fail(self, job_id: str, *, error: str) -> RagEvaluationJobRecord:
-        job = self.get(job_id)
-        updated = RagEvaluationJobRecord(
-            id=job.id,
-            name=job.name,
-            status="failed",
-            mode=job.mode,
-            ks=job.ks,
-            example_count=job.example_count,
-            created_at=job.created_at,
-            updated_at=_utc_now(),
-            error=error,
-        )
-        self._jobs[job_id] = updated
-        return updated
-
-    def get(self, job_id: str) -> RagEvaluationJobRecord:
-        try:
-            return self._jobs[job_id]
-        except KeyError as exc:
-            raise ValueError("RAG evaluation job not found.") from exc
-
-    def list(self, *, limit: int = 50) -> list[RagEvaluationJobRecord]:
-        jobs = sorted(self._jobs.values(), key=lambda job: job.updated_at, reverse=True)
-        return jobs[:limit]
-
-    def clear(self) -> None:
-        self._jobs.clear()
+        jobs = list(result.scalars().all())
+        return [_to_record(job) for job in jobs]
 
 
-def _utc_now() -> datetime:
-    return datetime.now(tz=UTC)
+async def _get_job(session: AsyncSession, job_id: str) -> RagEvaluationJob:
+    job = await session.get(RagEvaluationJob, job_id)
+    if job is None:
+        raise ValueError("RAG evaluation job not found.")
+    return job
+
+
+def _to_record(job: RagEvaluationJob) -> RagEvaluationJobRecord:
+    return RagEvaluationJobRecord(
+        id=job.id,
+        name=job.name,
+        status=_job_status(job.status),
+        mode=_job_mode(job.mode),
+        ks=tuple(int(k) for k in job.ks),
+        example_count=job.example_count,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        owner_user_id=job.owner_user_id,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        parameters=dict(job.parameters or {}),
+        examples=list(job.examples or []),
+        report=dict(job.report) if job.report is not None else None,
+        error=job.error,
+    )
+
+
+def _job_status(value: str) -> RagEvaluationJobStatus:
+    if value == "running":
+        return "running"
+    if value == "completed":
+        return "completed"
+    if value == "failed":
+        return "failed"
+    return "queued"
+
+
+def _job_mode(value: str) -> RagEvaluationJobMode:
+    if value == "auto_rag":
+        return "auto_rag"
+    return "scored_dataset"

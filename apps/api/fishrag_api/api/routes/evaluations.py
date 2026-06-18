@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, status
 from fishrag_agent.approval import apply_medical_safety_guard
 from fishrag_common.config import Settings, get_settings
 from fishrag_rag.embeddings import EmbeddingClient
@@ -15,7 +15,7 @@ from fishrag_rag.evaluation import (
     evaluate_rag_dataset,
     normalize_ks,
 )
-from fishrag_rag.generation import ChatClient, ChatGenerationError, generate_rag_answer
+from fishrag_rag.generation import ChatClient, generate_rag_answer
 from fishrag_rag.keyword_index import KeywordIndexClient
 from fishrag_rag.rerankers import RerankerClient
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -31,14 +31,14 @@ from fishrag_api.api.dependencies import (
 from fishrag_api.api.routes.rag import RagSearchRequest, _run_hybrid_search
 from fishrag_api.core.errors import AppError
 from fishrag_api.services.evaluations import (
-    InMemoryRagEvaluationJobStore,
     RagEvaluationJobMode,
     RagEvaluationJobRecord,
     RagEvaluationJobStatus,
+    SqlAlchemyRagEvaluationJobStore,
 )
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
-evaluation_job_store = InMemoryRagEvaluationJobStore()
+evaluation_job_store = SqlAlchemyRagEvaluationJobStore()
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -77,6 +77,7 @@ class RagEvaluationJobCreateRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     use_reranker: bool = True
     reranker_top_n: int = Field(default=10, ge=1, le=50)
+    run_in_background: bool = False
 
     model_config = ConfigDict(extra="forbid")
 
@@ -126,6 +127,8 @@ class RagEvaluationJobResponse(BaseModel):
     example_count: int
     created_at: datetime
     updated_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
     error: str | None = None
     report: RagEvaluationResponse | None = None
 
@@ -152,6 +155,7 @@ async def score_rag_evaluation(
 )
 async def create_rag_evaluation_job(
     request: Annotated[RagEvaluationJobCreateRequest, Body()],
+    background_tasks: BackgroundTasks,
     session: DbSession,
     settings: SettingsDep,
     embedding_client: EmbeddingClientDep,
@@ -162,45 +166,59 @@ async def create_rag_evaluation_job(
     request_examples = _load_request_examples(request)
     ks = normalize_ks(request.ks)
     mode: RagEvaluationJobMode = "auto_rag" if request.run_rag else "scored_dataset"
-    job = evaluation_job_store.create(
+    job = await evaluation_job_store.create_queued(
+        session,
         name=request.name,
         mode=mode,
         ks=ks,
         example_count=len(request_examples),
+        parameters=_job_parameters(request),
+        examples=[example.model_dump(mode="json") for example in request_examples],
     )
-    try:
-        evaluation_examples = await _materialize_evaluation_examples(
-            request=request,
-            examples=request_examples,
-            session=session,
-            settings=settings,
-            embedding_client=embedding_client,
-            keyword_index_client=keyword_index_client,
-            reranker_client=reranker_client,
-            chat_client=chat_client,
+    if request.run_in_background:
+        background_tasks.add_task(
+            _execute_rag_evaluation_job,
+            job.id,
+            request,
+            request_examples,
+            session,
+            settings,
+            embedding_client,
+            keyword_index_client,
+            reranker_client,
+            chat_client,
         )
-        report = evaluate_rag_dataset(evaluation_examples, ks=ks)
-    except (AppError, ChatGenerationError) as exc:
-        failed_job = evaluation_job_store.fail(job.id, error=str(exc))
-        return _to_job_response(failed_job)
+        return _to_job_response(job)
 
-    completed_job = evaluation_job_store.complete(job.id, report=report)
+    completed_job = await _execute_rag_evaluation_job(
+        job.id,
+        request,
+        request_examples,
+        session,
+        settings,
+        embedding_client,
+        keyword_index_client,
+        reranker_client,
+        chat_client,
+    )
     return _to_job_response(completed_job)
 
 
 @router.get("/rag/jobs", response_model=RagEvaluationJobListResponse)
 async def list_rag_evaluation_jobs(
+    session: DbSession,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> RagEvaluationJobListResponse:
+    jobs = await evaluation_job_store.list(session, limit=limit)
     return RagEvaluationJobListResponse(
-        jobs=[_to_job_response(job) for job in evaluation_job_store.list(limit=limit)]
+        jobs=[_to_job_response(job) for job in jobs]
     )
 
 
 @router.get("/rag/jobs/{job_id}", response_model=RagEvaluationJobResponse)
-async def get_rag_evaluation_job(job_id: str) -> RagEvaluationJobResponse:
+async def get_rag_evaluation_job(job_id: str, session: DbSession) -> RagEvaluationJobResponse:
     try:
-        job = evaluation_job_store.get(job_id)
+        job = await evaluation_job_store.get(session, job_id)
     except ValueError as exc:
         raise AppError(str(exc), code="rag_evaluation_job_not_found", status_code=404) from exc
     return _to_job_response(job)
@@ -246,6 +264,52 @@ def _parse_jsonl_examples(dataset_jsonl: str) -> list[RagEvaluationExampleReques
                 details={"line": line_number, "message": str(exc)},
             ) from exc
     return examples
+
+
+def _job_parameters(request: RagEvaluationJobCreateRequest) -> dict[str, object]:
+    return {
+        "run_rag": request.run_rag,
+        "run_in_background": request.run_in_background,
+        "vector_limit": request.vector_limit,
+        "keyword_limit": request.keyword_limit,
+        "limit": request.limit,
+        "use_reranker": request.use_reranker,
+        "reranker_top_n": request.reranker_top_n,
+    }
+
+
+async def _execute_rag_evaluation_job(
+    job_id: str,
+    request: RagEvaluationJobCreateRequest,
+    examples: list[RagEvaluationExampleRequest],
+    session: AsyncSession,
+    settings: Settings,
+    embedding_client: EmbeddingClient,
+    keyword_index_client: KeywordIndexClient,
+    reranker_client: RerankerClient,
+    chat_client: ChatClient,
+) -> RagEvaluationJobRecord:
+    await evaluation_job_store.mark_running(session, job_id)
+    try:
+        evaluation_examples = await _materialize_evaluation_examples(
+            request=request,
+            examples=examples,
+            session=session,
+            settings=settings,
+            embedding_client=embedding_client,
+            keyword_index_client=keyword_index_client,
+            reranker_client=reranker_client,
+            chat_client=chat_client,
+        )
+        report = evaluate_rag_dataset(evaluation_examples, ks=normalize_ks(request.ks))
+    except Exception as exc:
+        return await evaluation_job_store.fail(session, job_id, error=str(exc))
+
+    return await evaluation_job_store.complete(
+        session,
+        job_id,
+        report=_to_response(report).model_dump(mode="json"),
+    )
 
 
 async def _materialize_evaluation_examples(
@@ -355,6 +419,8 @@ def _to_job_response(job: RagEvaluationJobRecord) -> RagEvaluationJobResponse:
         example_count=job.example_count,
         created_at=job.created_at,
         updated_at=job.updated_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
         error=job.error,
-        report=_to_response(job.report) if job.report is not None else None,
+        report=RagEvaluationResponse.model_validate(job.report) if job.report is not None else None,
     )

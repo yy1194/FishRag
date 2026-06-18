@@ -14,6 +14,7 @@ def test_metadata_contains_stage_one_tables() -> None:
         "agent_tasks",
         "approvals",
         "memories",
+        "rag_evaluation_jobs",
     }
 
     assert expected_tables.issubset(set(Base.metadata.tables))

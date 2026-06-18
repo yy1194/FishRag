@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends
+from fishrag_agent.approval import ApprovalCheck, default_approval_policy
 from fishrag_agent.context import ContextItem
 from fishrag_agent.memory import InMemoryMemoryStore
 from fishrag_agent.runtime import AgentRunRequest, AgentRuntime, AgentToolCall
@@ -21,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fishrag_api.api.dependencies import (
+    CurrentUser,
+    get_current_user,
     get_embedding_client,
     get_keyword_index_client,
     get_reranker_client,
@@ -33,6 +36,7 @@ from fishrag_api.api.routes.rag import (
     _to_search_response,
 )
 from fishrag_api.core.errors import AppError
+from fishrag_api.services.approvals import create_approval_record
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -45,6 +49,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 EmbeddingClientDep = Annotated[EmbeddingClient, Depends(get_embedding_client)]
 KeywordIndexClientDep = Annotated[KeywordIndexClient, Depends(get_keyword_index_client)]
 RerankerClientDep = Annotated[RerankerClient, Depends(get_reranker_client)]
+CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 
 
 class AgentContextItemRequest(BaseModel):
@@ -126,6 +131,44 @@ class ApiRagSearchTool:
         return _to_search_response(result).model_dump(mode="json")
 
 
+class ApiApprovalHandler:
+    def __init__(
+        self,
+        *,
+        session: AsyncSession,
+        user: CurrentUser,
+    ) -> None:
+        self.session = session
+        self.user = user
+
+    async def request_approval(
+        self,
+        *,
+        session_id: str,
+        user_input: str,
+        tool_name: str,
+        tool_arguments: Mapping[str, Any],
+        check: ApprovalCheck,
+    ) -> Mapping[str, Any]:
+        approval = await create_approval_record(
+            self.session,
+            requested_by_user_id=self.user.id,
+            tool_name=tool_name,
+            tool_input={
+                "session_id": session_id,
+                "user_input": user_input,
+                "original_tool_input": dict(tool_arguments),
+                "approved_tool_input": None,
+                "risk": check.as_dict(),
+            },
+        )
+        return {
+            "approval_id": approval.id,
+            "approval_status": approval.status,
+            "requested_by_user_id": approval.requested_by_user_id,
+        }
+
+
 @router.get("/tools", response_model=AgentCapabilitiesResponse)
 async def get_agent_tools() -> AgentCapabilitiesResponse:
     runtime = _runtime(rag_search_tool=_StaticRagSearchTool())
@@ -137,6 +180,7 @@ async def run_agent(
     session_id: str,
     request: Annotated[AgentRunBody, Body()],
     session: DbSession,
+    user: CurrentUserDep,
     settings: SettingsDep,
     embedding_client: EmbeddingClientDep,
     keyword_index_client: KeywordIndexClientDep,
@@ -149,7 +193,8 @@ async def run_agent(
             embedding_client=embedding_client,
             keyword_index_client=keyword_index_client,
             reranker_client=reranker_client,
-        )
+        ),
+        approval_handler=ApiApprovalHandler(session=session, user=user),
     )
     try:
         result = await runtime.run(
@@ -175,13 +220,19 @@ async def run_agent(
     return AgentRunResponse.model_validate(result.as_dict())
 
 
-def _runtime(*, rag_search_tool: ApiRagSearchTool | _StaticRagSearchTool) -> AgentRuntime:
+def _runtime(
+    *,
+    rag_search_tool: ApiRagSearchTool | _StaticRagSearchTool,
+    approval_handler: ApiApprovalHandler | None = None,
+) -> AgentRuntime:
     return AgentRuntime(
         todo_store=todo_store,
         memory_store=memory_store,
         skill_registry=skill_registry,
         subagent_runner=SubAgentRunner(subagent_registry),
         rag_search_tool=rag_search_tool,
+        approval_policy=default_approval_policy(),
+        approval_handler=approval_handler,
     )
 
 

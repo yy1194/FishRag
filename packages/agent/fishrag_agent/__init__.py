@@ -1,5 +1,16 @@
 """Agent runtime primitives for FishRag."""
 
+from fishrag_agent.approval import (
+    ApprovalCheck,
+    ApprovalPolicy,
+    ApprovalRequestHandler,
+    ApprovalRule,
+    MedicalSafetyAssessment,
+    SafeAnswer,
+    apply_medical_safety_guard,
+    assess_medical_safety,
+    default_approval_policy,
+)
 from fishrag_agent.context import (
     ContextItem,
     ContextSnapshot,
@@ -45,6 +56,10 @@ from fishrag_agent.subagents import (
 )
 
 __all__ = [
+    "ApprovalCheck",
+    "ApprovalPolicy",
+    "ApprovalRequestHandler",
+    "ApprovalRule",
     "AgentRunRequest",
     "AgentRunResult",
     "AgentRuntime",
@@ -54,9 +69,11 @@ __all__ = [
     "ContextSnapshot",
     "InMemoryTodoStore",
     "InMemoryMemoryStore",
+    "MedicalSafetyAssessment",
     "MemoryItem",
     "MemorySnapshot",
     "RagSearchTool",
+    "SafeAnswer",
     "SkillMetadata",
     "SkillPackage",
     "SkillRegistry",
@@ -72,8 +89,11 @@ __all__ = [
     "TodoSnapshot",
     "TodoStats",
     "TodoStatus",
+    "apply_medical_safety_guard",
+    "assess_medical_safety",
     "compact_context",
     "compress_payload",
+    "default_approval_policy",
     "default_skill_registry",
     "default_subagent_registry",
     "estimate_context_tokens",

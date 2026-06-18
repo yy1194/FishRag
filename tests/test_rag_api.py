@@ -111,14 +111,15 @@ class FakeChatClient:
     provider = "fake"
     model = "fake-chat"
 
-    def __init__(self) -> None:
+    def __init__(self, *, answer: str = "Generated answer [C1].") -> None:
+        self.answer = answer
         self.calls = 0
         self.messages: list[dict[str, str]] = []
 
     async def complete(self, *, messages: Sequence[dict[str, str]]) -> str:
         self.calls += 1
         self.messages = list(messages)
-        return "Generated answer [C1]."
+        return self.answer
 
 
 def test_rag_search_api_runs_hybrid_search_with_reranker() -> None:
@@ -233,3 +234,62 @@ def test_rag_answer_api_returns_no_evidence_without_calling_chat() -> None:
     assert body["citations"] == []
     assert "没有检索到足够证据" in body["answer"]
     assert fake_chat.calls == 0
+
+
+def test_rag_answer_api_adds_medical_safety_disclaimer_for_high_risk_answer() -> None:
+    fake_session = FakeRagSession(
+        [
+            {
+                "chunk_id": "chunk-vector",
+                "document_id": "doc-1",
+                "chunk_index": 0,
+                "content": "evidence",
+                "chunk_metadata": {"filename": "guide.md"},
+                "filename": "guide.md",
+                "content_type": "text/markdown",
+                "storage_path": "uploads/guide.md",
+                "score": 0.8,
+            }
+        ]
+    )
+    fake_embedding = FakeEmbeddingClient()
+    fake_keyword = FakeKeywordIndexClient([])
+    fake_reranker = FakeRerankerClient()
+    fake_chat = FakeChatClient(answer="资料提示需要遵医嘱调整剂量。[C1]")
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[FakeRagSession]:
+        yield fake_session
+
+    def override_settings() -> Settings:
+        return Settings.from_env({"FISHRAG_EMBEDDING_DIMENSIONS": "2"})
+
+    def override_embedding_client() -> FakeEmbeddingClient:
+        return fake_embedding
+
+    def override_keyword_client() -> FakeKeywordIndexClient:
+        return fake_keyword
+
+    def override_reranker_client() -> FakeRerankerClient:
+        return fake_reranker
+
+    def override_chat_client() -> FakeChatClient:
+        return fake_chat
+
+    app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_embedding_client] = override_embedding_client
+    app.dependency_overrides[get_keyword_index_client] = override_keyword_client
+    app.dependency_overrides[get_reranker_client] = override_reranker_client
+    app.dependency_overrides[get_chat_client] = override_chat_client
+
+    response = TestClient(app).post(
+        "/api/v1/rag/answer",
+        json={"query": "这个药的剂量怎么调整？", "use_reranker": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_answered"]
+    assert body["safety"]["high_risk"]
+    assert "不能替代医生诊断" in body["answer"]

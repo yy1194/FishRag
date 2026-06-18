@@ -5,11 +5,14 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 from fishrag_api.api.dependencies import (
+    CurrentUser,
+    get_current_user,
     get_embedding_client,
     get_keyword_index_client,
     get_reranker_client,
     get_session,
 )
+from fishrag_api.db.models import Approval, new_id, utc_now
 from fishrag_api.main import create_app
 from fishrag_common.config import Settings, get_settings
 from fishrag_rag.embeddings import EmbeddingBatch
@@ -29,6 +32,15 @@ class FakeMappingResult:
 
 
 class FakeAgentSession:
+    def __init__(self) -> None:
+        self.approvals: dict[str, Approval] = {}
+
+    def add(self, item: Approval) -> None:
+        now = utc_now()
+        item.id = item.id or new_id()
+        item.created_at = item.created_at or now
+        self.approvals[item.id] = item
+
     async def execute(
         self,
         _: object,
@@ -49,6 +61,12 @@ class FakeAgentSession:
                 }
             ]
         )
+
+    async def commit(self) -> None:
+        return None
+
+    async def refresh(self, _: object) -> None:
+        return None
 
 
 class FakeEmbeddingClient:
@@ -122,7 +140,11 @@ def test_agent_run_api_executes_tools_and_rag_search() -> None:
     def override_reranker_client() -> FakeRerankerClient:
         return FakeRerankerClient()
 
+    def override_user() -> CurrentUser:
+        return CurrentUser(id="user-1", role="member")
+
     app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_settings] = override_settings
     app.dependency_overrides[get_embedding_client] = override_embedding_client
     app.dependency_overrides[get_keyword_index_client] = override_keyword_client
@@ -182,3 +204,55 @@ def test_agent_run_api_executes_tools_and_rag_search() -> None:
     assert body["tool_results"][3]["output"]["metadata"]["name"] == "rag_answering"
     assert body["tool_results"][4]["output"]["citations"][0]["id"] == "C1"
     assert "rag_search" in body["available_tools"]
+
+
+def test_agent_run_api_interrupts_high_risk_tool_and_creates_approval() -> None:
+    app = create_app()
+    fake_session = FakeAgentSession()
+
+    async def override_session() -> AsyncIterator[FakeAgentSession]:
+        yield fake_session
+
+    def override_settings() -> Settings:
+        return Settings.from_env({"FISHRAG_EMBEDDING_DIMENSIONS": "2"})
+
+    def override_embedding_client() -> FakeEmbeddingClient:
+        return FakeEmbeddingClient()
+
+    def override_keyword_client() -> FakeKeywordIndexClient:
+        return FakeKeywordIndexClient()
+
+    def override_reranker_client() -> FakeRerankerClient:
+        return FakeRerankerClient()
+
+    def override_user() -> CurrentUser:
+        return CurrentUser(id="user-1", role="member")
+
+    app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_settings] = override_settings
+    app.dependency_overrides[get_embedding_client] = override_embedding_client
+    app.dependency_overrides[get_keyword_index_client] = override_keyword_client
+    app.dependency_overrides[get_reranker_client] = override_reranker_client
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/agent/sessions/agent-risk-session/run",
+        json={
+            "input": "删除文档",
+            "tool_calls": [
+                {
+                    "name": "delete_document",
+                    "arguments": {"document_id": "doc-1"},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "waiting_for_approval"
+    assert body["tool_results"][0]["status"] == "approval_required"
+    approval_id = body["tool_results"][0]["output"]["approval_id"]
+    assert fake_session.approvals[approval_id].tool_name == "delete_document"
+    assert fake_session.approvals[approval_id].requested_by_user_id == "user-1"

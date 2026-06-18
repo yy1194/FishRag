@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
+from fishrag_agent.approval import ApprovalPolicy, ApprovalRequestHandler
 from fishrag_agent.context import ContextItem, ContextSnapshot, compact_context, compress_payload
 from fishrag_agent.memory import InMemoryMemoryStore
 from fishrag_agent.planning import InMemoryTodoStore, TodoDraft, TodoStatus, write_todos
@@ -82,6 +83,8 @@ class AgentRuntime:
         skill_registry: SkillRegistry,
         subagent_runner: SubAgentRunner,
         rag_search_tool: RagSearchTool | None = None,
+        approval_policy: ApprovalPolicy | None = None,
+        approval_handler: ApprovalRequestHandler | None = None,
         max_context_items: int = 12,
         max_context_chars: int = 6000,
         max_tool_output_chars: int = 4000,
@@ -91,6 +94,8 @@ class AgentRuntime:
         self.skill_registry = skill_registry
         self.subagent_runner = subagent_runner
         self.rag_search_tool = rag_search_tool
+        self.approval_policy = approval_policy
+        self.approval_handler = approval_handler
         self.max_context_items = max_context_items
         self.max_context_chars = max_context_chars
         self.max_tool_output_chars = max_tool_output_chars
@@ -119,7 +124,7 @@ class AgentRuntime:
         tool_results: list[AgentToolResult] = []
 
         for call in request.tool_calls:
-            result = await self._execute_tool(session_id, call)
+            result = await self._execute_tool(session_id, user_input, call)
             result = self._compress_tool_result(result)
             tool_results.append(result)
             context_items.append(
@@ -135,11 +140,7 @@ class AgentRuntime:
             max_items=self.max_context_items,
             max_chars=self.max_context_chars,
         )
-        status = (
-            "completed"
-            if all(result.status == "completed" for result in tool_results)
-            else "failed"
-        )
+        status = _run_status(tool_results)
         return AgentRunResult(
             run_id=str(uuid4()),
             session_id=session_id,
@@ -152,8 +153,35 @@ class AgentRuntime:
             available_skills=tuple(skill.name for skill in self.skill_registry.list_metadata()),
         )
 
-    async def _execute_tool(self, session_id: str, call: AgentToolCall) -> AgentToolResult:
+    async def _execute_tool(
+        self,
+        session_id: str,
+        user_input: str,
+        call: AgentToolCall,
+    ) -> AgentToolResult:
         tool_name = call.name.strip()
+        if self.approval_policy is not None:
+            check = self.approval_policy.evaluate(
+                tool_name=tool_name,
+                arguments=call.arguments,
+            )
+            if check.requires_approval:
+                output: dict[str, Any] = {"approval": check.as_dict()}
+                if self.approval_handler is not None:
+                    approval_result = await self.approval_handler.request_approval(
+                        session_id=session_id,
+                        user_input=user_input,
+                        tool_name=tool_name,
+                        tool_arguments=call.arguments,
+                        check=check,
+                    )
+                    output.update(dict(approval_result))
+                return AgentToolResult(
+                    name=tool_name,
+                    status="approval_required",
+                    output=output,
+                )
+
         if tool_name not in self.available_tools:
             return AgentToolResult(
                 name=tool_name,
@@ -327,8 +355,19 @@ def _normalize_text(value: str, label: str) -> str:
 def _build_response(tool_results: Sequence[AgentToolResult]) -> str:
     if not tool_results:
         return "已记录用户输入，等待下一步工具调用。"
+    approvals = sum(1 for result in tool_results if result.status == "approval_required")
+    if approvals:
+        return f"已暂停 {approvals} 个高风险工具调用，等待人工审批。"
     completed = sum(1 for result in tool_results if result.status == "completed")
     failed = len(tool_results) - completed
     if failed:
         return f"已执行 {len(tool_results)} 个工具调用，其中 {failed} 个失败。"
     return f"已执行 {completed} 个工具调用。"
+
+
+def _run_status(tool_results: Sequence[AgentToolResult]) -> str:
+    if any(result.status == "approval_required" for result in tool_results):
+        return "waiting_for_approval"
+    if all(result.status == "completed" for result in tool_results):
+        return "completed"
+    return "failed"

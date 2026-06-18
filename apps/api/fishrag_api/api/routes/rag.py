@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, Depends
+from fishrag_agent.approval import apply_medical_safety_guard
 from fishrag_common.config import Settings, get_settings
 from fishrag_rag.embeddings import EmbeddingClient, EmbeddingError
 from fishrag_rag.generation import ChatClient, ChatGenerationError, generate_rag_answer
@@ -95,6 +96,7 @@ class RagAnswerResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
     is_answered: bool
+    safety: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/vector-search", response_model=RagSearchResponse)
@@ -194,7 +196,20 @@ async def answer_rag(
         )
     except ChatGenerationError as exc:
         raise AppError(str(exc), code="chat_generation_error", status_code=502) from exc
-    return _to_answer_response(answer)
+    guarded = apply_medical_safety_guard(
+        query=request.query,
+        answer=answer.answer,
+        citation_count=len(answer.citations),
+    )
+    return _to_answer_response(
+        RagAnswer(
+            query=answer.query,
+            answer=guarded.answer,
+            citations=answer.citations,
+            is_answered=answer.is_answered and guarded.is_answered,
+        ),
+        safety=guarded.assessment.as_dict(),
+    )
 
 
 async def _run_hybrid_search(
@@ -336,12 +351,17 @@ def _to_search_response(result: RagSearchResult) -> RagSearchResponse:
     )
 
 
-def _to_answer_response(answer: RagAnswer) -> RagAnswerResponse:
+def _to_answer_response(
+    answer: RagAnswer,
+    *,
+    safety: dict[str, Any] | None = None,
+) -> RagAnswerResponse:
     return RagAnswerResponse(
         query=answer.query,
         answer=answer.answer,
         citations=[_to_citation_response(citation) for citation in answer.citations],
         is_answered=answer.is_answered,
+        safety=safety or {},
     )
 
 

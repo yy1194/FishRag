@@ -32,6 +32,94 @@ POST /api/v1/evaluations/rag/score
 - `aggregate`：全量样本的平均指标。
 - `examples`：每条评测样本的指标明细。
 
+## 批量评测任务
+
+阶段 8 第二块新增评测任务 API。当前任务以同步方式执行，并写入内存版历史报告存储；后续可以替换为数据库表和后台队列。
+
+### 创建任务
+
+```text
+POST /api/v1/evaluations/rag/jobs
+```
+
+离线评分模式：
+
+```json
+{
+  "name": "Nightly RAG evaluation",
+  "run_rag": false,
+  "ks": [1, 3, 5, 10],
+  "dataset_jsonl": "{\"id\":\"case-1\",\"query\":\"问题\",\"relevant_chunk_ids\":[\"chunk-a\"],\"retrieved_chunk_ids\":[\"chunk-a\"],\"cited_chunk_ids\":[\"chunk-a\"],\"answer\":\"回答 [C1]。\"}"
+}
+```
+
+自动运行 RAG 模式：
+
+```json
+{
+  "name": "Auto RAG evaluation",
+  "run_rag": true,
+  "ks": [1, 3, 5],
+  "limit": 10,
+  "use_reranker": true,
+  "examples": [
+    {
+      "id": "case-1",
+      "query": "高血压指南中的随访建议是什么？",
+      "relevant_chunk_ids": ["chunk-guideline-1", "chunk-guideline-2"]
+    }
+  ]
+}
+```
+
+`run_rag=true` 时，系统会为每条样本调用现有 RAG 管线，自动生成：
+
+- `retrieved_chunk_ids`
+- `cited_chunk_ids`
+- `answer`
+
+随后再调用同一套指标计算逻辑生成评估报告。
+
+### 查询任务列表
+
+```text
+GET /api/v1/evaluations/rag/jobs?limit=50
+```
+
+### 查询任务详情
+
+```text
+GET /api/v1/evaluations/rag/jobs/{job_id}
+```
+
+任务状态：
+
+| 状态 | 说明 |
+| --- | --- |
+| `running` | 任务正在执行 |
+| `completed` | 任务已完成，`report` 中包含评估报告 |
+| `failed` | 任务失败，`error` 中包含失败原因 |
+
+任务模式：
+
+| 模式 | 说明 |
+| --- | --- |
+| `scored_dataset` | 使用请求中已有的召回、引用和回答直接评分 |
+| `auto_rag` | 自动调用 RAG 管线后评分 |
+
+## JSONL 导入
+
+`dataset_jsonl` 每一行是一条评测样本，字段与 `POST /api/v1/evaluations/rag/score` 中的 `examples` 一致。
+
+示例：
+
+```jsonl
+{"id":"case-1","query":"问题 1","relevant_chunk_ids":["chunk-a"],"retrieved_chunk_ids":["chunk-a"],"cited_chunk_ids":["chunk-a"],"answer":"回答 [C1]。"}
+{"id":"case-2","query":"问题 2","relevant_chunk_ids":[],"retrieved_chunk_ids":[],"cited_chunk_ids":[],"answer":""}
+```
+
+空行会被忽略。任意一行格式错误时，接口返回 `invalid_rag_evaluation_jsonl`，并在 `details.line` 中标记错误行号。
+
 ## 评测样本格式
 
 | 字段 | 说明 |
@@ -92,8 +180,7 @@ supported_citations / cited_citations
 
 ## 后续扩展
 
-- 接入真实批量 RAG 运行，自动生成 `retrieved_chunk_ids`、`cited_chunk_ids` 和 `answer`。
-- 支持从 JSONL 文件导入评测集。
-- 增加评测任务表、任务状态和历史报告。
+- 将内存版历史报告替换为数据库持久化。
+- 将同步评测任务迁移到 Celery/RQ 后台队列。
 - 增加模型裁判版 faithfulness、answer relevance 和 groundedness。
 - 将评估指标接入前端评估面板和 Prometheus 监控。

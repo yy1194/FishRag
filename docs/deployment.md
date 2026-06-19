@@ -73,6 +73,16 @@ docker build -f apps/api/Dockerfile -t fishrag-api:local .
 docker build -f apps/web/Dockerfile -t fishrag-web:local apps/web
 ```
 
+## 验收烟测
+
+应用启动后先运行基础验收脚本：
+
+```bash
+python tools/acceptance_smoke.py --base-url http://localhost:8000/api/v1
+```
+
+该脚本会检查健康接口、Prometheus 指标接口和 RAG 评估打分接口。完整说明见 [验收与演示](acceptance.md)。
+
 ## 轻量压测
 
 项目提供一个无第三方依赖的 HTTP smoke load 脚本：

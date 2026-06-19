@@ -218,6 +218,7 @@ FishRag/
 - [可观测性](docs/observability.md)
 - [部署说明](docs/deployment.md)
 - [验收与演示](docs/acceptance.md)
+- [CentOS 7.9 域名部署](docs/centos7-deployment.md)
 
 ## 任务清单
 
